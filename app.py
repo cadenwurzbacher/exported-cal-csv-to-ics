@@ -7,11 +7,9 @@ from datetime import datetime, timedelta
 from dateutil.parser import parse as date_parse
 from ics import Calendar, Event
 import requests
-from zoneinfo import ZoneInfo
 
 st.title("Dynamic ICS Calendar Sync with GitHub Gist")
 
-# --- Declarative Base Setup ---
 Base = declarative_base()
 
 class EventRecord(Base):
@@ -24,15 +22,13 @@ class EventRecord(Base):
     description = Column(String)
     unique_key = Column(String, unique=True)
 
-# --- Database Setup ---
 engine = create_engine("sqlite:///events.db")
 Base.metadata.create_all(engine)
 Session = sessionmaker(bind=engine)
 session = Session()
 
-# --- Check for GitHub Secrets ---
 if "github" not in st.secrets:
-    st.error("GitHub secrets not found in `st.secrets`. Add them in Streamlit secrets.")
+    st.error("GitHub secrets not found.")
     st.stop()
 
 GITHUB_TOKEN = st.secrets["github"]["token"]
@@ -48,15 +44,12 @@ def validate_csv(df: pd.DataFrame):
 def create_unique_key(row):
     return f"{row['Subject']}|{row['Start Date']}|{row['Start Time']}"
 
-def parse_event(row, tz: ZoneInfo):
+def parse_event(row):
+    # Parse as naive local times:
     start_str = f"{row['Start Date']} {row['Start Time']}"
     end_str = f"{row['End Date']} {row['End Time']}"
-    start_dt = date_parse(start_str)
-    end_dt = date_parse(end_str)
-
-    # Localize to the selected timezone
-    start_dt = start_dt.replace(tzinfo=tz)
-    end_dt = end_dt.replace(tzinfo=tz)
+    start_dt = date_parse(start_str) # Naive datetime
+    end_dt = date_parse(end_str)     # Naive datetime
 
     return {
         "subject": row["Subject"],
@@ -67,25 +60,24 @@ def parse_event(row, tz: ZoneInfo):
         "unique_key": create_unique_key(row)
     }
 
-def sync_events(df, tz: ZoneInfo):
+def sync_events(df):
     existing_events = session.query(EventRecord).all()
     existing_map = {e.unique_key: e for e in existing_events}
-    
-    incoming_data = [parse_event(row, tz) for _, row in df.iterrows()]
+
+    incoming_data = [parse_event(row) for _, row in df.iterrows()]
     incoming_map = {e['unique_key']: e for e in incoming_data}
-    
+
     existing_keys = set(existing_map.keys())
     incoming_keys = set(incoming_map.keys())
-    
+
     to_add = incoming_keys - existing_keys
     to_remove = existing_keys - incoming_keys
     to_potentially_update = existing_keys.intersection(incoming_keys)
-    
+
     added = []
     updated = []
     deleted = []
-    
-    # Add new events
+
     for key in to_add:
         data = incoming_map[key]
         new_record = EventRecord(
@@ -98,8 +90,7 @@ def sync_events(df, tz: ZoneInfo):
         )
         session.add(new_record)
         added.append(data['subject'])
-    
-    # Update existing events if changed
+
     for key in to_potentially_update:
         incoming = incoming_map[key]
         existing = existing_map[key]
@@ -117,53 +108,42 @@ def sync_events(df, tz: ZoneInfo):
             changed = True
         if changed:
             updated.append(incoming['subject'])
-    
-    # Remove events not in incoming file
+
     for key in to_remove:
         rec = existing_map[key]
         session.delete(rec)
         deleted.append(rec.subject)
-    
+
     session.commit()
     return added, updated, deleted
 
-def generate_ics(tz: ZoneInfo):
-    # Generate ICS for ALL events (no time limit)
+def generate_ics():
     cal = Calendar()
     events = session.query(EventRecord).all()
-    
+
     for ev in events:
         ics_event = Event()
         ics_event.name = ev.subject
 
-        start_dt = ev.start_datetime.astimezone(tz)
-        end_dt = ev.end_datetime.astimezone(tz)
+        # Provide naive datetimes directly (floating times)
+        ics_event.begin = ev.start_datetime
+        ics_event.end = ev.end_datetime
 
-        duration = end_dt - start_dt
+        duration = ev.end_datetime - ev.start_datetime
         is_multiple_of_24 = (duration.total_seconds() % 86400 == 0)
-        starts_at_midnight = (start_dt.hour == 0 and start_dt.minute == 0 and start_dt.second == 0)
-        ends_at_midnight = (end_dt.hour == 0 and end_dt.minute == 0 and end_dt.second == 0)
-
-        if is_multiple_of_24 and starts_at_midnight and ends_at_midnight:
-            # All-day (or multi-day all-day) event
-            ics_event.begin = start_dt.date()
-            ics_event.end = end_dt.date()
+        starts_midnight = (ev.start_datetime.hour == 0 and ev.start_datetime.minute == 0 and ev.start_datetime.second == 0)
+        ends_midnight = (ev.end_datetime.hour == 0 and ev.end_datetime.minute == 0 and ev.end_datetime.second == 0)
+        if is_multiple_of_24 and starts_midnight and ends_midnight:
             ics_event.make_all_day()
-        else:
-            ics_event.begin = start_dt
-            ics_event.end = end_dt
 
         ics_event.location = ev.location
         ics_event.uid = ev.unique_key
-        ics_event.created = datetime.now(tz)
-        
+        ics_event.created = datetime.now()
+
         cal.events.add(ics_event)
 
-    # Convert calendar to string
     ics_str = str(cal)
 
-    # Insert VTIMEZONE and X-WR-TIMEZONE to ensure Apple Calendar interprets the times correctly.
-    # Example VTIMEZONE for America/Chicago (CST/CDT):
     vtimezone = """BEGIN:VTIMEZONE
 TZID:America/Chicago
 X-LIC-LOCATION:America/Chicago
@@ -184,33 +164,33 @@ END:STANDARD
 END:VTIMEZONE
 """
 
-    # Add X-WR-TIMEZONE to calendar properties
-    # Typically goes after the "BEGIN:VCALENDAR" line
     lines = ics_str.split('\n')
+    # Add X-WR-TIMEZONE
     for i, line in enumerate(lines):
         if line.strip() == 'BEGIN:VCALENDAR':
             lines.insert(i+1, 'X-WR-TIMEZONE:America/Chicago')
             break
 
-    # Insert VTIMEZONE block before END:VCALENDAR
+    # Insert VTIMEZONE before END:VCALENDAR
     for i, line in enumerate(lines):
         if line.strip() == 'END:VCALENDAR':
             lines.insert(i, vtimezone.strip())
             break
 
-    # Now adjust DTSTART/DTEND lines to include TZID instead of Z
-    # The default ICS from the library sets UTC (with trailing 'Z').
-    # We'll replace lines like:
-    # DTSTART:20241209T16...Z  to DTSTART;TZID=America/Chicago:20241209T10...
-    # We'll do this by removing the trailing 'Z' and adding ";TZID=America/Chicago"
+    # Add TZID to DTSTART/DTEND lines. They should have no Z since times are naive.
     new_lines = []
     for line in lines:
-        if line.startswith("DTSTART:") and line.endswith("Z"):
-            dt = line.replace("DTSTART:", "").replace("Z", "")
-            new_lines.append(f"DTSTART;TZID=America/Chicago:{dt}")
-        elif line.startswith("DTEND:") and line.endswith("Z"):
-            dt = line.replace("DTEND:", "").replace("Z", "")
-            new_lines.append(f"DTEND;TZID=America/Chicago:{dt}")
+        if line.startswith("DTSTART:") and 'Z' not in line:
+            # Add TZID
+            parts = line.split("DTSTART:")
+            datetime_str = parts[1]
+            new_line = f"DTSTART;TZID=America/Chicago:{datetime_str}"
+            new_lines.append(new_line)
+        elif line.startswith("DTEND:") and 'Z' not in line:
+            parts = line.split("DTEND:")
+            datetime_str = parts[1]
+            new_line = f"DTEND;TZID=America/Chicago:{datetime_str}"
+            new_lines.append(new_line)
         else:
             new_lines.append(line)
 
@@ -218,7 +198,6 @@ END:VTIMEZONE
     return final_ics
 
 def update_gist_ics(content: str):
-    # Update the gist file with the new ICS content
     url = f"https://api.github.com/gists/{GIST_ID}"
     headers = {
         "Authorization": f"token {GITHUB_TOKEN}",
@@ -236,7 +215,6 @@ def update_gist_ics(content: str):
     gist_data = response.json()
     raw_url = gist_data["files"]["events.ics"]["raw_url"]
 
-    # Construct a stable raw URL without revision hash:
     parts = raw_url.split('/')
     username = parts[3]
     gist_id = parts[4]
@@ -250,11 +228,6 @@ def search_events(query: str):
     ).all()
     return results
 
-# Timezone selection (default to Central Time - America/Chicago)
-available_tzs = ["America/Chicago", "America/New_York", "America/Los_Angeles", "UTC"]
-selected_tz = st.selectbox("Select the timezone for event times:", available_tzs, index=0)
-tz = ZoneInfo(selected_tz)
-
 uploaded_file = st.file_uploader("Upload Outlook CSV", type=["csv"])
 if uploaded_file is not None:
     try:
@@ -265,8 +238,8 @@ if uploaded_file is not None:
         else:
             if st.button("Process & Update ICS"):
                 with st.spinner("Processing events..."):
-                    added, updated, deleted = sync_events(df, tz)
-                    ics_content = generate_ics(tz)
+                    added, updated, deleted = sync_events(df)
+                    ics_content = generate_ics()
                     stable_ics_link = update_gist_ics(ics_content)
 
                 st.success("Events processed successfully!")
@@ -282,7 +255,7 @@ if uploaded_file is not None:
                     st.write(", ".join(deleted))
 
                 st.markdown(f"**ICS Link:** [Subscribe to Calendar]({stable_ics_link})")
-                st.info("This link should remain stable. Apple Calendar should now interpret these events in the specified timezone.")
+                st.info("Events should now appear at the correct local times in Apple Calendar.")
     except Exception as e:
         st.error(f"Error processing file: {e}")
 
@@ -307,7 +280,6 @@ if results:
 else:
     st.write("No events found.")
 
-# Add a button to clear all events
 if st.button("Clear all events"):
     session.query(EventRecord).delete()
     session.commit()
