@@ -140,8 +140,6 @@ def generate_ics(tz: ZoneInfo):
         end_dt = ev.end_datetime.astimezone(tz)
 
         duration = end_dt - start_dt
-
-        # Check if duration is a multiple of 24 hours and starts/ends at midnight
         is_multiple_of_24 = (duration.total_seconds() % 86400 == 0)
         starts_at_midnight = (start_dt.hour == 0 and start_dt.minute == 0 and start_dt.second == 0)
         ends_at_midnight = (end_dt.hour == 0 and end_dt.minute == 0 and end_dt.second == 0)
@@ -156,15 +154,68 @@ def generate_ics(tz: ZoneInfo):
             ics_event.end = end_dt
 
         ics_event.location = ev.location
-        # Do not include description
-        # ics_event.description = ev.description
         ics_event.uid = ev.unique_key
-        # Ensure DTSTAMP is included
         ics_event.created = datetime.now(tz)
         
         cal.events.add(ics_event)
-    
-    return str(cal)
+
+    # Convert calendar to string
+    ics_str = str(cal)
+
+    # Insert VTIMEZONE and X-WR-TIMEZONE to ensure Apple Calendar interprets the times correctly.
+    # Example VTIMEZONE for America/Chicago (CST/CDT):
+    vtimezone = """BEGIN:VTIMEZONE
+TZID:America/Chicago
+X-LIC-LOCATION:America/Chicago
+BEGIN:DAYLIGHT
+TZOFFSETFROM:-0600
+TZOFFSETTO:-0500
+TZNAME:CDT
+DTSTART:19700308T020000
+RRULE:FREQ=YEARLY;BYMONTH=3;BYDAY=2SU
+END:DAYLIGHT
+BEGIN:STANDARD
+TZOFFSETFROM:-0500
+TZOFFSETTO:-0600
+TZNAME:CST
+DTSTART:19701101T020000
+RRULE:FREQ=YEARLY;BYMONTH=11;BYDAY=1SU
+END:STANDARD
+END:VTIMEZONE
+"""
+
+    # Add X-WR-TIMEZONE to calendar properties
+    # Typically goes after the "BEGIN:VCALENDAR" line
+    lines = ics_str.split('\n')
+    for i, line in enumerate(lines):
+        if line.strip() == 'BEGIN:VCALENDAR':
+            lines.insert(i+1, 'X-WR-TIMEZONE:America/Chicago')
+            break
+
+    # Insert VTIMEZONE block before END:VCALENDAR
+    for i, line in enumerate(lines):
+        if line.strip() == 'END:VCALENDAR':
+            lines.insert(i, vtimezone.strip())
+            break
+
+    # Now adjust DTSTART/DTEND lines to include TZID instead of Z
+    # The default ICS from the library sets UTC (with trailing 'Z').
+    # We'll replace lines like:
+    # DTSTART:20241209T16...Z  to DTSTART;TZID=America/Chicago:20241209T10...
+    # We'll do this by removing the trailing 'Z' and adding ";TZID=America/Chicago"
+    new_lines = []
+    for line in lines:
+        if line.startswith("DTSTART:") and line.endswith("Z"):
+            dt = line.replace("DTSTART:", "").replace("Z", "")
+            new_lines.append(f"DTSTART;TZID=America/Chicago:{dt}")
+        elif line.startswith("DTEND:") and line.endswith("Z"):
+            dt = line.replace("DTEND:", "").replace("Z", "")
+            new_lines.append(f"DTEND;TZID=America/Chicago:{dt}")
+        else:
+            new_lines.append(line)
+
+    final_ics = "\n".join(new_lines)
+    return final_ics
 
 def update_gist_ics(content: str):
     # Update the gist file with the new ICS content
@@ -185,14 +236,10 @@ def update_gist_ics(content: str):
     gist_data = response.json()
     raw_url = gist_data["files"]["events.ics"]["raw_url"]
 
-    # raw_url typically looks like:
-    # https://gist.githubusercontent.com/<username>/<gist_id>/raw/<revision_hash>/events.ics
-    # We can remove the revision_hash to get a stable link:
+    # Construct a stable raw URL without revision hash:
     parts = raw_url.split('/')
-    # parts = ["https:", "", "gist.githubusercontent.com", "<username>", "<gist_id>", "raw", "<revision_hash>", "events.ics"]
     username = parts[3]
     gist_id = parts[4]
-
     stable_raw_url = f"https://gist.githubusercontent.com/{username}/{gist_id}/raw/events.ics"
     return stable_raw_url
 
@@ -225,17 +272,17 @@ if uploaded_file is not None:
                 st.success("Events processed successfully!")
                 st.write("**Summary of changes:**")
                 st.write(f"- Added events: {len(added)}")
-                if len(added) > 0:
+                if added:
                     st.write(", ".join(added))
                 st.write(f"- Updated events: {len(updated)}")
-                if len(updated) > 0:
+                if updated:
                     st.write(", ".join(updated))
                 st.write(f"- Deleted events: {len(deleted)}")
-                if len(deleted) > 0:
+                if deleted:
                     st.write(", ".join(deleted))
 
                 st.markdown(f"**ICS Link:** [Subscribe to Calendar]({stable_ics_link})")
-                st.info("This link will remain stable and always point to the latest version of your ICS file. However, to comply with MIME type requirements (`text/calendar`), ensure it's served from a location that sets the correct Content-Type header.")
+                st.info("This link should remain stable. Apple Calendar should now interpret these events in the specified timezone.")
     except Exception as e:
         st.error(f"Error processing file: {e}")
 
