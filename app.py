@@ -1,12 +1,12 @@
 import streamlit as st
 import pandas as pd
-import requests
 import os
-from sqlalchemy import create_engine, Column, Integer, String, DateTime
-from sqlalchemy.orm import declarative_base, sessionmaker
+from sqlalchemy import create_engine, Column, Integer, String, DateTime, MetaData, Table
+from sqlalchemy.orm import sessionmaker, declarative_base
 from datetime import datetime, timedelta
 from dateutil.parser import parse as date_parse
 from ics import Calendar, Event
+import requests
 
 st.title("Dynamic ICS Calendar Sync with GitHub Gist")
 
@@ -37,7 +37,6 @@ if "github" not in st.secrets:
 GITHUB_TOKEN = st.secrets["github"]["token"]
 GIST_ID = st.secrets["github"]["gist_id"]
 
-# --- Helper Functions ---
 def validate_csv(df: pd.DataFrame):
     required_columns = ["Subject", "Start Date", "Start Time", "End Date", "End Time", "Location", "Description"]
     for col in required_columns:
@@ -125,7 +124,7 @@ def sync_events(df):
 def generate_ics():
     # Generate ICS for the next 3 months
     cal = Calendar()
-    now = datetime.now()
+    now = datetime.utcnow()
     future_limit = now + timedelta(days=90)
     
     events = session.query(EventRecord).filter(
@@ -141,6 +140,9 @@ def generate_ics():
         ics_event.location = ev.location
         ics_event.description = ev.description
         ics_event.uid = ev.unique_key
+        # Ensure DTSTAMP is included
+        ics_event.created = datetime.utcnow()
+        
         cal.events.add(ics_event)
     
     return str(cal)
@@ -172,7 +174,6 @@ def search_events(query: str):
     ).all()
     return results
 
-# --- Streamlit UI ---
 uploaded_file = st.file_uploader("Upload Outlook CSV", type=["csv"])
 if uploaded_file is not None:
     try:
@@ -199,8 +200,10 @@ if uploaded_file is not None:
                 st.write(", ".join(deleted))
 
             st.markdown(f"**ICS Link:** [Subscribe to Calendar]({ics_link})")
+            st.info("Note: To comply with MIME type requirements (`text/calendar`), serve this ICS file from a location that sets the correct Content-Type header.")
     except Exception as e:
         st.error(f"Error processing file: {e}")
+
 
 st.markdown("---")
 st.subheader("View/Search Events")
@@ -222,3 +225,10 @@ if results:
     st.dataframe(pd.DataFrame(data))
 else:
     st.write("No events found.")
+
+# Add a button to clear all events
+if st.button("Clear all events"):
+    session.query(EventRecord).delete()
+    session.commit()
+    st.success("All events have been cleared.")
+    st.experimental_rerun()
