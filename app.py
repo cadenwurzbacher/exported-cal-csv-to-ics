@@ -121,7 +121,7 @@ def sync_events(df):
     session.commit()
     return added, updated, deleted
 
-def generate_ics():
+def generate_ics(include_description=True):
     # Generate ICS for the next 3 months
     cal = Calendar()
     now = datetime.utcnow()
@@ -138,7 +138,11 @@ def generate_ics():
         ics_event.begin = ev.start_datetime
         ics_event.end = ev.end_datetime
         ics_event.location = ev.location
-        ics_event.description = ev.description
+        
+        # Only set description if include_description is True and event has one
+        if include_description and ev.description:
+            ics_event.description = ev.description
+        
         ics_event.uid = ev.unique_key
         # Ensure DTSTAMP is included
         ics_event.created = datetime.utcnow()
@@ -182,25 +186,29 @@ if uploaded_file is not None:
         if not valid:
             st.error(msg)
         else:
-            with st.spinner("Processing events..."):
-                added, updated, deleted = sync_events(df)
-                ics_content = generate_ics()
-                ics_link = update_gist_ics(ics_content)
+            # Add checkbox to decide whether to include descriptions or not
+            include_desc = st.checkbox("Include descriptions from CSV?", value=True)
 
-            st.success("Events processed successfully!")
-            st.write("**Summary of changes:**")
-            st.write(f"- Added events: {len(added)}")
-            if len(added) > 0:
-                st.write(", ".join(added))
-            st.write(f"- Updated events: {len(updated)}")
-            if len(updated) > 0:
-                st.write(", ".join(updated))
-            st.write(f"- Deleted events: {len(deleted)}")
-            if len(deleted) > 0:
-                st.write(", ".join(deleted))
+            if st.button("Process & Update ICS"):
+                with st.spinner("Processing events..."):
+                    added, updated, deleted = sync_events(df)
+                    ics_content = generate_ics(include_description=include_desc)
+                    ics_link = update_gist_ics(ics_content)
 
-            st.markdown(f"**ICS Link:** [Subscribe to Calendar]({ics_link})")
-            st.info("Note: To comply with MIME type requirements (`text/calendar`), serve this ICS file from a location that sets the correct Content-Type header.")
+                st.success("Events processed successfully!")
+                st.write("**Summary of changes:**")
+                st.write(f"- Added events: {len(added)}")
+                if len(added) > 0:
+                    st.write(", ".join(added))
+                st.write(f"- Updated events: {len(updated)}")
+                if len(updated) > 0:
+                    st.write(", ".join(updated))
+                st.write(f"- Deleted events: {len(deleted)}")
+                if len(deleted) > 0:
+                    st.write(", ".join(deleted))
+
+                st.markdown(f"**ICS Link:** [Subscribe to Calendar]({ics_link})")
+                st.info("Note: To comply with MIME type requirements (`text/calendar`), serve this ICS file from a location that sets the correct Content-Type header.")
     except Exception as e:
         st.error(f"Error processing file: {e}")
 
