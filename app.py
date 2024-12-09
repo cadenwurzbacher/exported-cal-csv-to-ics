@@ -8,7 +8,7 @@ from dateutil.parser import parse as date_parse
 from ics import Calendar, Event
 import requests
 
-st.title("Dynamic ICS Calendar Sync with GitHub Gist")
+st.title("Floating-Time ICS Calendar Sync")
 
 Base = declarative_base()
 
@@ -45,12 +45,11 @@ def create_unique_key(row):
     return f"{row['Subject']}|{row['Start Date']}|{row['Start Time']}"
 
 def parse_event(row):
-    # Parse as naive local times:
+    # Parse as naive datetimes (no timezone):
     start_str = f"{row['Start Date']} {row['Start Time']}"
     end_str = f"{row['End Date']} {row['End Time']}"
-    start_dt = date_parse(start_str) # Naive datetime
-    end_dt = date_parse(end_str)     # Naive datetime
-
+    start_dt = date_parse(start_str)
+    end_dt = date_parse(end_str)
     return {
         "subject": row["Subject"],
         "start_datetime": start_dt,
@@ -125,10 +124,11 @@ def generate_ics():
         ics_event = Event()
         ics_event.name = ev.subject
 
-        # Provide naive datetimes directly (floating times)
+        # Provide naive times directly, so they remain floating
         ics_event.begin = ev.start_datetime
         ics_event.end = ev.end_datetime
 
+        # Check if all-day:
         duration = ev.end_datetime - ev.start_datetime
         is_multiple_of_24 = (duration.total_seconds() % 86400 == 0)
         starts_midnight = (ev.start_datetime.hour == 0 and ev.start_datetime.minute == 0 and ev.start_datetime.second == 0)
@@ -142,55 +142,16 @@ def generate_ics():
 
         cal.events.add(ics_event)
 
+    # Convert to string
     ics_str = str(cal)
 
-    vtimezone = """BEGIN:VTIMEZONE
-TZID:America/Chicago
-X-LIC-LOCATION:America/Chicago
-BEGIN:DAYLIGHT
-TZOFFSETFROM:-0600
-TZOFFSETTO:-0500
-TZNAME:CDT
-DTSTART:19700308T020000
-RRULE:FREQ=YEARLY;BYMONTH=3;BYDAY=2SU
-END:DAYLIGHT
-BEGIN:STANDARD
-TZOFFSETFROM:-0500
-TZOFFSETTO:-0600
-TZNAME:CST
-DTSTART:19701101T020000
-RRULE:FREQ=YEARLY;BYMONTH=11;BYDAY=1SU
-END:STANDARD
-END:VTIMEZONE
-"""
-
-    lines = ics_str.split('\n')
-    # Add X-WR-TIMEZONE
-    for i, line in enumerate(lines):
-        if line.strip() == 'BEGIN:VCALENDAR':
-            lines.insert(i+1, 'X-WR-TIMEZONE:America/Chicago')
-            break
-
-    # Insert VTIMEZONE before END:VCALENDAR
-    for i, line in enumerate(lines):
-        if line.strip() == 'END:VCALENDAR':
-            lines.insert(i, vtimezone.strip())
-            break
-
-    # Add TZID to DTSTART/DTEND lines. They should have no Z since times are naive.
+    # At this point, since we never added timezone info, the times should not have 'Z'.
+    # If they do, remove the 'Z'. This ensures they're truly "floating".
+    # Just in case, strip out any trailing 'Z':
     new_lines = []
-    for line in lines:
-        if line.startswith("DTSTART:") and 'Z' not in line:
-            # Add TZID
-            parts = line.split("DTSTART:")
-            datetime_str = parts[1]
-            new_line = f"DTSTART;TZID=America/Chicago:{datetime_str}"
-            new_lines.append(new_line)
-        elif line.startswith("DTEND:") and 'Z' not in line:
-            parts = line.split("DTEND:")
-            datetime_str = parts[1]
-            new_line = f"DTEND;TZID=America/Chicago:{datetime_str}"
-            new_lines.append(new_line)
+    for line in ics_str.splitlines():
+        if (line.startswith("DTSTART:") or line.startswith("DTEND:")) and line.endswith("Z"):
+            new_lines.append(line[:-1])  # Remove the trailing 'Z'
         else:
             new_lines.append(line)
 
@@ -255,7 +216,7 @@ if uploaded_file is not None:
                     st.write(", ".join(deleted))
 
                 st.markdown(f"**ICS Link:** [Subscribe to Calendar]({stable_ics_link})")
-                st.info("Events should now appear at the correct local times in Apple Calendar.")
+                st.info("Times are floating (no timezone). Apple Calendar should display them at the exact times you provided, based on your device's local time.")
     except Exception as e:
         st.error(f"Error processing file: {e}")
 
