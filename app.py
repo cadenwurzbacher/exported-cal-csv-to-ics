@@ -231,4 +231,4 @@ if st.button("Clear all events"):
     session.query(EventRecord).delete()
     session.commit()
     st.success("All events have been cleared.")
-    st.experimental_rerun()
+    st.rerun()
