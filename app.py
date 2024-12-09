@@ -7,6 +7,7 @@ from datetime import datetime, timedelta
 from dateutil.parser import parse as date_parse
 from ics import Calendar, Event
 import requests
+from zoneinfo import ZoneInfo
 
 st.title("Dynamic ICS Calendar Sync with GitHub Gist")
 
@@ -47,11 +48,16 @@ def validate_csv(df: pd.DataFrame):
 def create_unique_key(row):
     return f"{row['Subject']}|{row['Start Date']}|{row['Start Time']}"
 
-def parse_event(row):
+def parse_event(row, tz: ZoneInfo):
     start_str = f"{row['Start Date']} {row['Start Time']}"
     end_str = f"{row['End Date']} {row['End Time']}"
     start_dt = date_parse(start_str)
     end_dt = date_parse(end_str)
+
+    # Localize to the selected timezone
+    start_dt = start_dt.replace(tzinfo=tz)
+    end_dt = end_dt.replace(tzinfo=tz)
+
     return {
         "subject": row["Subject"],
         "start_datetime": start_dt,
@@ -61,11 +67,11 @@ def parse_event(row):
         "unique_key": create_unique_key(row)
     }
 
-def sync_events(df):
+def sync_events(df, tz: ZoneInfo):
     existing_events = session.query(EventRecord).all()
     existing_map = {e.unique_key: e for e in existing_events}
     
-    incoming_data = [parse_event(row) for _, row in df.iterrows()]
+    incoming_data = [parse_event(row, tz) for _, row in df.iterrows()]
     incoming_map = {e['unique_key']: e for e in incoming_data}
     
     existing_keys = set(existing_map.keys())
@@ -121,23 +127,40 @@ def sync_events(df):
     session.commit()
     return added, updated, deleted
 
-def generate_ics():
+def generate_ics(tz: ZoneInfo):
     # Generate ICS for ALL events (no time limit)
     cal = Calendar()
-    
     events = session.query(EventRecord).all()
     
     for ev in events:
         ics_event = Event()
         ics_event.name = ev.subject
-        ics_event.begin = ev.start_datetime
-        ics_event.end = ev.end_datetime
+
+        start_dt = ev.start_datetime.astimezone(tz)
+        end_dt = ev.end_datetime.astimezone(tz)
+
+        duration = end_dt - start_dt
+
+        # Check if duration is a multiple of 24 hours and starts/ends at midnight
+        is_multiple_of_24 = (duration.total_seconds() % 86400 == 0)
+        starts_at_midnight = (start_dt.hour == 0 and start_dt.minute == 0 and start_dt.second == 0)
+        ends_at_midnight = (end_dt.hour == 0 and end_dt.minute == 0 and end_dt.second == 0)
+
+        if is_multiple_of_24 and starts_at_midnight and ends_at_midnight:
+            # All-day (or multiple all-day) event
+            ics_event.begin = start_dt.date()
+            ics_event.end = end_dt.date()
+            ics_event.make_all_day()
+        else:
+            ics_event.begin = start_dt
+            ics_event.end = end_dt
+
         ics_event.location = ev.location
         # Do not include description
         # ics_event.description = ev.description
         ics_event.uid = ev.unique_key
         # Ensure DTSTAMP is included
-        ics_event.created = datetime.utcnow()
+        ics_event.created = datetime.now(tz)
         
         cal.events.add(ics_event)
     
@@ -170,6 +193,11 @@ def search_events(query: str):
     ).all()
     return results
 
+# Timezone selection (default to Central Time - America/Chicago)
+available_tzs = ["America/Chicago", "America/New_York", "America/Los_Angeles", "UTC"]
+selected_tz = st.selectbox("Select the timezone for event times:", available_tzs, index=0)
+tz = ZoneInfo(selected_tz)
+
 uploaded_file = st.file_uploader("Upload Outlook CSV", type=["csv"])
 if uploaded_file is not None:
     try:
@@ -178,11 +206,10 @@ if uploaded_file is not None:
         if not valid:
             st.error(msg)
         else:
-            # Removed the checkbox for including description
             if st.button("Process & Update ICS"):
                 with st.spinner("Processing events..."):
-                    added, updated, deleted = sync_events(df)
-                    ics_content = generate_ics()
+                    added, updated, deleted = sync_events(df, tz)
+                    ics_content = generate_ics(tz)
                     ics_link = update_gist_ics(ics_content)
 
                 st.success("Events processed successfully!")
