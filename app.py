@@ -147,7 +147,7 @@ def generate_ics(tz: ZoneInfo):
         ends_at_midnight = (end_dt.hour == 0 and end_dt.minute == 0 and end_dt.second == 0)
 
         if is_multiple_of_24 and starts_at_midnight and ends_at_midnight:
-            # All-day (or multiple all-day) event
+            # All-day (or multi-day all-day) event
             ics_event.begin = start_dt.date()
             ics_event.end = end_dt.date()
             ics_event.make_all_day()
@@ -184,7 +184,17 @@ def update_gist_ics(content: str):
     response.raise_for_status()
     gist_data = response.json()
     raw_url = gist_data["files"]["events.ics"]["raw_url"]
-    return raw_url
+
+    # raw_url typically looks like:
+    # https://gist.githubusercontent.com/<username>/<gist_id>/raw/<revision_hash>/events.ics
+    # We can remove the revision_hash to get a stable link:
+    parts = raw_url.split('/')
+    # parts = ["https:", "", "gist.githubusercontent.com", "<username>", "<gist_id>", "raw", "<revision_hash>", "events.ics"]
+    username = parts[3]
+    gist_id = parts[4]
+
+    stable_raw_url = f"https://gist.githubusercontent.com/{username}/{gist_id}/raw/events.ics"
+    return stable_raw_url
 
 def search_events(query: str):
     q = f"%{query}%"
@@ -210,7 +220,7 @@ if uploaded_file is not None:
                 with st.spinner("Processing events..."):
                     added, updated, deleted = sync_events(df, tz)
                     ics_content = generate_ics(tz)
-                    ics_link = update_gist_ics(ics_content)
+                    stable_ics_link = update_gist_ics(ics_content)
 
                 st.success("Events processed successfully!")
                 st.write("**Summary of changes:**")
@@ -224,8 +234,8 @@ if uploaded_file is not None:
                 if len(deleted) > 0:
                     st.write(", ".join(deleted))
 
-                st.markdown(f"**ICS Link:** [Subscribe to Calendar]({ics_link})")
-                st.info("Note: To comply with MIME type requirements (`text/calendar`), serve this ICS file from a location that sets the correct Content-Type header.")
+                st.markdown(f"**ICS Link:** [Subscribe to Calendar]({stable_ics_link})")
+                st.info("This link will remain stable and always point to the latest version of your ICS file. However, to comply with MIME type requirements (`text/calendar`), ensure it's served from a location that sets the correct Content-Type header.")
     except Exception as e:
         st.error(f"Error processing file: {e}")
 
@@ -255,4 +265,4 @@ if st.button("Clear all events"):
     session.query(EventRecord).delete()
     session.commit()
     st.success("All events have been cleared.")
-    st.rerun()
+    st.experimental_rerun()
