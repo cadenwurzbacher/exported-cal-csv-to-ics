@@ -1,7 +1,7 @@
 import streamlit as st
 import pandas as pd
 import os
-from sqlalchemy import create_engine, Column, Integer, String, DateTime, MetaData, Table
+from sqlalchemy import create_engine, Column, Integer, String, DateTime
 from sqlalchemy.orm import sessionmaker, declarative_base
 from datetime import datetime, timedelta
 from dateutil.parser import parse as date_parse
@@ -121,16 +121,11 @@ def sync_events(df):
     session.commit()
     return added, updated, deleted
 
-def generate_ics(include_description=True):
-    # Generate ICS for the next 3 months
+def generate_ics():
+    # Generate ICS for ALL events (no time limit)
     cal = Calendar()
-    now = datetime.utcnow()
-    future_limit = now + timedelta(days=90)
     
-    events = session.query(EventRecord).filter(
-        EventRecord.start_datetime >= now,
-        EventRecord.start_datetime <= future_limit
-    ).all()
+    events = session.query(EventRecord).all()
     
     for ev in events:
         ics_event = Event()
@@ -138,11 +133,8 @@ def generate_ics(include_description=True):
         ics_event.begin = ev.start_datetime
         ics_event.end = ev.end_datetime
         ics_event.location = ev.location
-        
-        # Only set description if include_description is True and event has one
-        if include_description and ev.description:
-            ics_event.description = ev.description
-        
+        # Do not include description
+        # ics_event.description = ev.description
         ics_event.uid = ev.unique_key
         # Ensure DTSTAMP is included
         ics_event.created = datetime.utcnow()
@@ -186,13 +178,11 @@ if uploaded_file is not None:
         if not valid:
             st.error(msg)
         else:
-            # Add checkbox to decide whether to include descriptions or not
-            include_desc = st.checkbox("Include descriptions from CSV?", value=True)
-
+            # Removed the checkbox for including description
             if st.button("Process & Update ICS"):
                 with st.spinner("Processing events..."):
                     added, updated, deleted = sync_events(df)
-                    ics_content = generate_ics(include_description=include_desc)
+                    ics_content = generate_ics()
                     ics_link = update_gist_ics(ics_content)
 
                 st.success("Events processed successfully!")
@@ -211,7 +201,6 @@ if uploaded_file is not None:
                 st.info("Note: To comply with MIME type requirements (`text/calendar`), serve this ICS file from a location that sets the correct Content-Type header.")
     except Exception as e:
         st.error(f"Error processing file: {e}")
-
 
 st.markdown("---")
 st.subheader("View/Search Events")
