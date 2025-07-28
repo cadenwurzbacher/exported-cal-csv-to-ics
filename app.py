@@ -135,6 +135,7 @@ def generate_ics():
         ends_midnight = (ev.end_datetime.hour == 0 and ev.end_datetime.minute == 0 and ev.end_datetime.second == 0)
         if is_multiple_of_24 and starts_midnight and ends_midnight:
             ics_event.make_all_day()
+            ics_event.transp = "TRANSPARENT"  # Mark as free/busy-free
 
         ics_event.location = ev.location
         ics_event.uid = ev.unique_key
