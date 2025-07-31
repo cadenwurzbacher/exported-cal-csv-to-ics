@@ -117,39 +117,35 @@ def sync_events(df):
     return added, updated, deleted
 
 def generate_ics_free_all_day():
-    """Generate ICS with all-day events marked as free (transparent)"""
+    """Generate ICS with all-day events completely removed"""
     cal = Calendar()
     events = session.query(EventRecord).all()
     
     debug_info = []
 
     for ev in events:
-        ics_event = Event()
-        ics_event.name = ev.subject
-
-        # Provide naive times directly, so they remain floating
-        ics_event.begin = ev.start_datetime
-        ics_event.end = ev.end_datetime
-
         # Check duration
         duration = ev.end_datetime - ev.start_datetime
         duration_hours = duration.total_seconds() / 3600
         
-        # Mark as free if it's 24 hours or longer (with 1 hour tolerance)
+        # Skip 24+ hour events entirely
         is_24_hour_event = duration_hours >= 23  # 23+ hours to account for slight variations
         
         if is_24_hour_event:
-            ics_event.make_all_day()
-            ics_event.transp = "TRANSPARENT"  # Mark as free/busy-free
-            debug_info.append(f"✅ FREE (24h+): {ev.subject} (Start: {ev.start_datetime}, End: {ev.end_datetime}, Duration: {duration_hours:.1f}h)")
-        else:
-            debug_info.append(f"❌ BUSY: {ev.subject} (Start: {ev.start_datetime}, End: {ev.end_datetime}, Duration: {duration_hours:.1f}h)")
-
+            debug_info.append(f"🚫 REMOVED (24h+): {ev.subject} (Start: {ev.start_datetime}, End: {ev.end_datetime}, Duration: {duration_hours:.1f}h)")
+            continue  # Skip this event entirely
+        
+        # Only add events that are shorter than 23 hours
+        ics_event = Event()
+        ics_event.name = ev.subject
+        ics_event.begin = ev.start_datetime
+        ics_event.end = ev.end_datetime
         ics_event.location = ev.location
         ics_event.uid = ev.unique_key
         ics_event.created = datetime.now()
 
         cal.events.add(ics_event)
+        debug_info.append(f"✅ INCLUDED: {ev.subject} (Start: {ev.start_datetime}, End: {ev.end_datetime}, Duration: {duration_hours:.1f}h)")
 
     # Convert to string and clean up timezone info
     ics_str = str(cal)
@@ -297,7 +293,7 @@ if uploaded_file is not None:
                     st.write(", ".join(deleted))
 
                 st.markdown("**ICS Links:**")
-                st.markdown(f"🟢 **Free Version** (24h+ events marked as free): [Subscribe]({stable_ics_link_free})")
+                st.markdown(f"🟢 **Free Version** (24h+ events removed): [Subscribe]({stable_ics_link_free})")
                 st.markdown(f"🔴 **Busy Version** (24h+ events marked as busy): [Subscribe]({stable_ics_link_busy})")
                 st.info("Times are floating (no timezone). Apple Calendar should display them at the exact times you provided, based on your device's local time.")
                 
@@ -349,7 +345,7 @@ if st.button("Regenerate ICS with Current Events"):
         
         st.success("ICS files regenerated successfully!")
         st.markdown("**ICS Links:**")
-        st.markdown(f"🟢 **Free Version** (24h+ events marked as free): [Subscribe]({stable_ics_link_free})")
+        st.markdown(f"🟢 **Free Version** (24h+ events removed): [Subscribe]({stable_ics_link_free})")
         st.markdown(f"🔴 **Busy Version** (24h+ events marked as busy): [Subscribe]({stable_ics_link_busy})")
         
         # Show debug info for free version
