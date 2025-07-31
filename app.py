@@ -119,6 +119,9 @@ def sync_events(df):
 def generate_ics():
     cal = Calendar()
     events = session.query(EventRecord).all()
+    
+    # Debug info for all-day detection
+    debug_info = []
 
     for ev in events:
         ics_event = Event()
@@ -128,14 +131,20 @@ def generate_ics():
         ics_event.begin = ev.start_datetime
         ics_event.end = ev.end_datetime
 
-        # Check if all-day:
+        # Check duration
         duration = ev.end_datetime - ev.start_datetime
-        is_multiple_of_24 = (duration.total_seconds() % 86400 == 0)
-        starts_midnight = (ev.start_datetime.hour == 0 and ev.start_datetime.minute == 0 and ev.start_datetime.second == 0)
-        ends_midnight = (ev.end_datetime.hour == 0 and ev.end_datetime.minute == 0 and ev.end_datetime.second == 0)
-        if is_multiple_of_24 and starts_midnight and ends_midnight:
+        duration_hours = duration.total_seconds() / 3600
+        
+        # Mark as free if it's 24 hours or longer (with 1 hour tolerance)
+        # This covers all-day events regardless of start/end times
+        is_24_hour_event = duration_hours >= 23  # 23+ hours to account for slight variations
+        
+        if is_24_hour_event:
             ics_event.make_all_day()
             ics_event.transp = "TRANSPARENT"  # Mark as free/busy-free
+            debug_info.append(f"✅ FREE (24h+): {ev.subject} (Start: {ev.start_datetime}, End: {ev.end_datetime}, Duration: {duration_hours:.1f}h)")
+        else:
+            debug_info.append(f"❌ BUSY: {ev.subject} (Start: {ev.start_datetime}, End: {ev.end_datetime}, Duration: {duration_hours:.1f}h)")
 
         ics_event.location = ev.location
         ics_event.uid = ev.unique_key
@@ -157,7 +166,7 @@ def generate_ics():
             new_lines.append(line)
 
     final_ics = "\n".join(new_lines)
-    return final_ics
+    return final_ics, debug_info
 
 def update_gist_ics(content: str):
     url = f"https://api.github.com/gists/{GIST_ID}"
@@ -201,7 +210,7 @@ if uploaded_file is not None:
             if st.button("Process & Update ICS"):
                 with st.spinner("Processing events..."):
                     added, updated, deleted = sync_events(df)
-                    ics_content = generate_ics()
+                    ics_content, debug_info = generate_ics()
                     stable_ics_link = update_gist_ics(ics_content)
 
                 st.success("Events processed successfully!")
@@ -218,6 +227,11 @@ if uploaded_file is not None:
 
                 st.markdown(f"**ICS Link:** [Subscribe to Calendar]({stable_ics_link})")
                 st.info("Times are floating (no timezone). Apple Calendar should display them at the exact times you provided, based on your device's local time.")
+                
+                # Show debug info
+                st.subheader("Event Classification Debug")
+                for info in debug_info:
+                    st.text(info)
     except Exception as e:
         st.error(f"Error processing file: {e}")
 
@@ -247,3 +261,22 @@ if st.button("Clear all events"):
     session.commit()
     st.success("All events have been cleared.")
     st.rerun()
+
+st.markdown("---")
+st.subheader("Regenerate ICS File")
+
+if st.button("Regenerate ICS with Current Events"):
+    if session.query(EventRecord).count() > 0:
+        with st.spinner("Regenerating ICS file..."):
+            ics_content, debug_info = generate_ics()
+            stable_ics_link = update_gist_ics(ics_content)
+        
+        st.success("ICS file regenerated successfully!")
+        st.markdown(f"**ICS Link:** [Subscribe to Calendar]({stable_ics_link})")
+        
+        # Show debug info
+        st.subheader("Event Classification Debug")
+        for info in debug_info:
+            st.text(info)
+    else:
+        st.warning("No events in database to regenerate.")
