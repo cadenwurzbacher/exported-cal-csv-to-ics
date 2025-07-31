@@ -116,11 +116,11 @@ def sync_events(df):
     session.commit()
     return added, updated, deleted
 
-def generate_ics():
+def generate_ics_free_all_day():
+    """Generate ICS with all-day events marked as free (transparent)"""
     cal = Calendar()
     events = session.query(EventRecord).all()
     
-    # Debug info for all-day detection
     debug_info = []
 
     for ev in events:
@@ -136,7 +136,6 @@ def generate_ics():
         duration_hours = duration.total_seconds() / 3600
         
         # Mark as free if it's 24 hours or longer (with 1 hour tolerance)
-        # This covers all-day events regardless of start/end times
         is_24_hour_event = duration_hours >= 23  # 23+ hours to account for slight variations
         
         if is_24_hour_event:
@@ -152,12 +151,8 @@ def generate_ics():
 
         cal.events.add(ics_event)
 
-    # Convert to string
+    # Convert to string and clean up timezone info
     ics_str = str(cal)
-
-    # At this point, since we never added timezone info, the times should not have 'Z'.
-    # If they do, remove the 'Z'. This ensures they're truly "floating".
-    # Just in case, strip out any trailing 'Z':
     new_lines = []
     for line in ics_str.splitlines():
         if (line.startswith("DTSTART:") or line.startswith("DTEND:")) and line.endswith("Z"):
@@ -168,7 +163,54 @@ def generate_ics():
     final_ics = "\n".join(new_lines)
     return final_ics, debug_info
 
-def update_gist_ics(content: str):
+def generate_ics_busy_all_day():
+    """Generate ICS with all-day events marked as busy (opaque)"""
+    cal = Calendar()
+    events = session.query(EventRecord).all()
+    
+    debug_info = []
+
+    for ev in events:
+        ics_event = Event()
+        ics_event.name = ev.subject
+
+        # Provide naive times directly, so they remain floating
+        ics_event.begin = ev.start_datetime
+        ics_event.end = ev.end_datetime
+
+        # Check duration
+        duration = ev.end_datetime - ev.start_datetime
+        duration_hours = duration.total_seconds() / 3600
+        
+        # Mark as busy if it's 24 hours or longer (with 1 hour tolerance)
+        is_24_hour_event = duration_hours >= 23  # 23+ hours to account for slight variations
+        
+        if is_24_hour_event:
+            ics_event.make_all_day()
+            ics_event.transp = "OPAQUE"  # Mark as busy
+            debug_info.append(f"🔴 BUSY (24h+): {ev.subject} (Start: {ev.start_datetime}, End: {ev.end_datetime}, Duration: {duration_hours:.1f}h)")
+        else:
+            debug_info.append(f"❌ BUSY: {ev.subject} (Start: {ev.start_datetime}, End: {ev.end_datetime}, Duration: {duration_hours:.1f}h)")
+
+        ics_event.location = ev.location
+        ics_event.uid = ev.unique_key
+        ics_event.created = datetime.now()
+
+        cal.events.add(ics_event)
+
+    # Convert to string and clean up timezone info
+    ics_str = str(cal)
+    new_lines = []
+    for line in ics_str.splitlines():
+        if (line.startswith("DTSTART:") or line.startswith("DTEND:")) and line.endswith("Z"):
+            new_lines.append(line[:-1])  # Remove the trailing 'Z'
+        else:
+            new_lines.append(line)
+
+    final_ics = "\n".join(new_lines)
+    return final_ics, debug_info
+
+def update_gist_ics_free(content: str):
     url = f"https://api.github.com/gists/{GIST_ID}"
     headers = {
         "Authorization": f"token {GITHUB_TOKEN}",
@@ -176,7 +218,7 @@ def update_gist_ics(content: str):
     }
     data = {
         "files": {
-            "events.ics": {
+            "events-free.ics": {
                 "content": content
             }
         }
@@ -184,12 +226,36 @@ def update_gist_ics(content: str):
     response = requests.patch(url, headers=headers, json=data)
     response.raise_for_status()
     gist_data = response.json()
-    raw_url = gist_data["files"]["events.ics"]["raw_url"]
+    raw_url = gist_data["files"]["events-free.ics"]["raw_url"]
 
     parts = raw_url.split('/')
     username = parts[3]
     gist_id = parts[4]
-    stable_raw_url = f"https://gist.githubusercontent.com/{username}/{gist_id}/raw/events.ics"
+    stable_raw_url = f"https://gist.githubusercontent.com/{username}/{gist_id}/raw/events-free.ics"
+    return stable_raw_url
+
+def update_gist_ics_busy(content: str):
+    url = f"https://api.github.com/gists/{GIST_ID}"
+    headers = {
+        "Authorization": f"token {GITHUB_TOKEN}",
+        "Accept": "application/vnd.github.v3+json"
+    }
+    data = {
+        "files": {
+            "events-busy.ics": {
+                "content": content
+            }
+        }
+    }
+    response = requests.patch(url, headers=headers, json=data)
+    response.raise_for_status()
+    gist_data = response.json()
+    raw_url = gist_data["files"]["events-busy.ics"]["raw_url"]
+
+    parts = raw_url.split('/')
+    username = parts[3]
+    gist_id = parts[4]
+    stable_raw_url = f"https://gist.githubusercontent.com/{username}/{gist_id}/raw/events-busy.ics"
     return stable_raw_url
 
 def search_events(query: str):
@@ -210,8 +276,13 @@ if uploaded_file is not None:
             if st.button("Process & Update ICS"):
                 with st.spinner("Processing events..."):
                     added, updated, deleted = sync_events(df)
-                    ics_content, debug_info = generate_ics()
-                    stable_ics_link = update_gist_ics(ics_content)
+                    
+                    # Generate both versions
+                    ics_content_free, debug_info_free = generate_ics_free_all_day()
+                    ics_content_busy, debug_info_busy = generate_ics_busy_all_day()
+                    
+                    stable_ics_link_free = update_gist_ics_free(ics_content_free)
+                    stable_ics_link_busy = update_gist_ics_busy(ics_content_busy)
 
                 st.success("Events processed successfully!")
                 st.write("**Summary of changes:**")
@@ -225,12 +296,14 @@ if uploaded_file is not None:
                 if deleted:
                     st.write(", ".join(deleted))
 
-                st.markdown(f"**ICS Link:** [Subscribe to Calendar]({stable_ics_link})")
+                st.markdown("**ICS Links:**")
+                st.markdown(f"🟢 **Free Version** (24h+ events marked as free): [Subscribe]({stable_ics_link_free})")
+                st.markdown(f"🔴 **Busy Version** (24h+ events marked as busy): [Subscribe]({stable_ics_link_busy})")
                 st.info("Times are floating (no timezone). Apple Calendar should display them at the exact times you provided, based on your device's local time.")
                 
-                # Show debug info
-                st.subheader("Event Classification Debug")
-                for info in debug_info:
+                # Show debug info for free version
+                st.subheader("Event Classification (Free Version)")
+                for info in debug_info_free:
                     st.text(info)
     except Exception as e:
         st.error(f"Error processing file: {e}")
@@ -267,16 +340,21 @@ st.subheader("Regenerate ICS File")
 
 if st.button("Regenerate ICS with Current Events"):
     if session.query(EventRecord).count() > 0:
-        with st.spinner("Regenerating ICS file..."):
-            ics_content, debug_info = generate_ics()
-            stable_ics_link = update_gist_ics(ics_content)
+        with st.spinner("Regenerating ICS files..."):
+            ics_content_free, debug_info_free = generate_ics_free_all_day()
+            ics_content_busy, debug_info_busy = generate_ics_busy_all_day()
+            
+            stable_ics_link_free = update_gist_ics_free(ics_content_free)
+            stable_ics_link_busy = update_gist_ics_busy(ics_content_busy)
         
-        st.success("ICS file regenerated successfully!")
-        st.markdown(f"**ICS Link:** [Subscribe to Calendar]({stable_ics_link})")
+        st.success("ICS files regenerated successfully!")
+        st.markdown("**ICS Links:**")
+        st.markdown(f"🟢 **Free Version** (24h+ events marked as free): [Subscribe]({stable_ics_link_free})")
+        st.markdown(f"🔴 **Busy Version** (24h+ events marked as busy): [Subscribe]({stable_ics_link_busy})")
         
-        # Show debug info
-        st.subheader("Event Classification Debug")
-        for info in debug_info:
+        # Show debug info for free version
+        st.subheader("Event Classification (Free Version)")
+        for info in debug_info_free:
             st.text(info)
     else:
         st.warning("No events in database to regenerate.")
